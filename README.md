@@ -65,6 +65,8 @@ cd ham
 
 Output: `ham/dist/ham.fap`. Use a Flipper SDK matching your firmware; [uFBT](https://github.com/flipperdevices/flipperzero-ufbt) downloads the release SDK by default.
 
+Screenshot capture is disabled in normal builds. See [developer preview instructions](docs/development.md) for the build flag and catalog screenshot preparation.
+
 ## Test
 
 From the project root, using a C compiler:
@@ -80,3 +82,7 @@ cc -O2 -Wall -Wextra -Werror -DCHECK_CONTROLLED -I ham \
 ```
 
 The checks cover 800 simulated sessions, input pairing, timing, movement bounds, pause behavior, duration presets, infinite operation, timer wraparound, and movement distribution. They do not validate how human the behavior looks.
+
+## License
+
+[MIT](LICENSE), copyright 2026 lumen-rot.

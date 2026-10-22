@@ -6,9 +6,9 @@ App(
     stack_size=4096,
     requires=["gui", "storage"],
     fap_category="USB",
-    fap_version="0.5",
+    fap_version="0.6",
     fap_icon="icons/ham.png",
     fap_icon_assets="icons",
-    fap_author="HAM",
+    fap_author="lumen-rot",
     fap_description="Human Activity Mimic: coordinated typing, movement and pauses",
 )

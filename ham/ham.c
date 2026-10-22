@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "engine.h"
+#include "build_config.h"
 #include <ham_icons.h>
 
 #define HAM_DIR "/ext/apps_data/ham"
@@ -33,11 +34,13 @@ typedef struct {
     FuriMessageQueue* input;
     bool connected;
     bool usb_failed;
+    bool duration_selected;
+#if HAM_ENABLE_PREVIEW
     bool capture;
     bool captured;
-    bool duration_selected;
     unsigned capture_pose;
     uint8_t frame[1024];
+#endif
 } HamApp;
 
 static size_t read_file(Storage* storage, const char* path, char* dst, size_t capacity) {
@@ -154,7 +157,10 @@ static void draw_callback(Canvas* canvas, void* context) {
     const HamEngine* e = &app->engine;
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
-    unsigned pose = e->running ? (app->capture ? app->capture_pose : (furi_get_tick() / 220) % 2) : 0;
+    unsigned pose = e->running ? (furi_get_tick() / 220) % 2 : 0;
+#if HAM_ENABLE_PREVIEW
+    if(app->capture && e->running) pose = app->capture_pose;
+#endif
     canvas_draw_icon(canvas, 3 + pose, 1 + (pose ? 0 : 1), &I_ham);
     canvas_draw_str(canvas, 18, 11, "HAM");
     canvas_set_font(canvas, FontSecondary);
@@ -197,21 +203,30 @@ static void draw_callback(Canvas* canvas, void* context) {
     canvas_draw_str_aligned(canvas, 124, 53, AlignRight, AlignBottom, clock);
     canvas_draw_str(canvas, 4, 64, e->complete ? "OK  New session" : e->running ? "OK  Pause" : "OK  Start");
     canvas_draw_str_aligned(canvas, 124, 64, AlignRight, AlignBottom, "Back  Exit");
+#if HAM_ENABLE_PREVIEW
     if(app->capture && canvas_get_buffer_size(canvas) == sizeof(app->frame)) {
         memcpy(app->frame, canvas_get_buffer(canvas), sizeof(app->frame));
         app->captured = true;
     }
+#endif
     furi_mutex_release(app->mutex);
 }
 
 int32_t ham_app(void* context) {
     HamApp* app = calloc(1, sizeof(HamApp));
+    bool is_preview = false;
+#if HAM_ENABLE_PREVIEW
     /* Diagnostic rendering mode: captures the actual device canvas without HID output. */
     app->capture = context && !strncmp((const char*)context, "preview", 7);
+    is_preview = app->capture;
+#else
+    UNUSED(context);
+#endif
     app->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     app->input = furi_message_queue_alloc(16, sizeof(InputEvent));
     HamProfile profile = load_profile(app);
     ham_init(&app->engine, profile, app->text, profile.seed ? profile.seed : furi_hal_random_get());
+#if HAM_ENABLE_PREVIEW
     if(app->capture && strstr((const char*)context, "running")) {
         app->engine.running = true; /* Render-only diagnostics: engine is never ticked or dispatched. */
         app->capture_pose = strstr((const char*)context, "-b") ? 1 : 0;
@@ -220,8 +235,9 @@ int32_t ham_app(void* context) {
         app->engine.profile.duration_seconds = 0;
         app->duration_selected = true;
     }
+#endif
     FuriHalUsbInterface* previous_usb = furi_hal_usb_get_config();
-    app->usb_failed = !app->capture && !furi_hal_usb_set_config(&usb_hid, NULL);
+    app->usb_failed = !is_preview && !furi_hal_usb_set_config(&usb_hid, NULL);
     Gui* gui = furi_record_open(RECORD_GUI);
     ViewPort* view = view_port_alloc();
     view_port_draw_callback_set(view, draw_callback, app);
@@ -229,21 +245,26 @@ int32_t ham_app(void* context) {
     gui_add_view_port(gui, view, GuiLayerFullscreen);
     bool exit = false;
     uint32_t redraw = 0;
+#if HAM_ENABLE_PREVIEW
     uint32_t opened = furi_get_tick();
+#endif
     while(!exit) {
         InputEvent input;
         FuriStatus received = furi_message_queue_get(app->input, &input, 10);
         uint32_t now = furi_get_tick();
         furi_mutex_acquire(app->mutex, FuriWaitForever);
-        bool connected = app->capture || (!app->usb_failed && furi_hal_hid_is_connected());
+        bool connected = is_preview || (!app->usb_failed && furi_hal_hid_is_connected());
         if(!connected && app->engine.running) {
             release_inputs();
             ham_pause(&app->engine);
         }
         app->connected = connected;
-        if(app->capture) {
+#if HAM_ENABLE_PREVIEW
+        if(is_preview) {
             exit = now - opened > 800;
-        } else if(received == FuriStatusOk) {
+        } else
+#endif
+        if(received == FuriStatusOk) {
             if(input.key == InputKeyBack) exit = true;
             else if(input.key == InputKeyUp) app->duration_selected = false;
             else if(input.key == InputKeyDown) app->duration_selected = true;
@@ -271,7 +292,7 @@ int32_t ham_app(void* context) {
             }
         }
         bool was_running = app->engine.running;
-        if(!exit && !app->capture) {
+        if(!exit && !is_preview) {
             HamEvent event = ham_tick(&app->engine, now);
             if(!dispatch(event)) {
                 release_inputs();
@@ -285,13 +306,14 @@ int32_t ham_app(void* context) {
             redraw = now;
         }
     }
-    if(!app->usb_failed && !app->capture) release_inputs();
+    if(!app->usb_failed && !is_preview) release_inputs();
     view_port_enabled_set(view, false);
     gui_remove_view_port(gui, view);
     view_port_free(view);
     furi_record_close(RECORD_GUI);
-    if(!app->usb_failed && !app->capture) furi_hal_usb_set_config(previous_usb, NULL);
-    if(!app->capture) save_profile(&app->engine.profile);
+    if(!app->usb_failed && !is_preview) furi_hal_usb_set_config(previous_usb, NULL);
+    if(!is_preview) save_profile(&app->engine.profile);
+#if HAM_ENABLE_PREVIEW
     if(app->capture && app->captured) {
         Storage* storage = furi_record_open(RECORD_STORAGE);
         File* file = storage_file_alloc(storage);
@@ -301,6 +323,7 @@ int32_t ham_app(void* context) {
         storage_file_free(file);
         furi_record_close(RECORD_STORAGE);
     }
+#endif
     furi_message_queue_free(app->input);
     furi_mutex_free(app->mutex);
     free(app);
