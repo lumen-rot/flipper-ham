@@ -1,0 +1,17 @@
+tools/
+.venv/
+backups/
+ham/.vscode/
+ham/dist/
+ham/.ufbt/
+tests/engine_test
+tests/session.csv
+tests/device-profile*.txt
+tests/preview*.bin
+*.dSYM/
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example

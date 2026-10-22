@@ -1,0 +1,11 @@
+# HAM profile. Changes take effect when the app opens.
+# Radius is relative HID counts, not guaranteed screen pixels.
+activity=50
+radius=600
+# 0 enables infinite mode; adjustable in the app.
+duration_seconds=600
+wpm_min=100
+wpm_max=130
+click_percent=25
+# 0 chooses a fresh session seed. Use a positive seed for repeatable simulation.
+seed=0
