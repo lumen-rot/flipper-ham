@@ -3,15 +3,16 @@
 #include <gui/gui.h>
 #include <gui/view_port.h>
 #include <storage/storage.h>
+#include <dialogs/dialogs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "engine.h"
 #include "build_config.h"
+#include "profile_store.h"
 #include <ham_icons.h>
 
 #define HAM_DIR "/ext/apps_data/ham"
-#define HAM_PROFILE HAM_DIR "/profile.txt"
 #define HAM_TEXT HAM_DIR "/text.txt"
 #define TEXT_CAPACITY 8192
 
@@ -32,6 +33,7 @@ typedef struct {
     char text[TEXT_CAPACITY];
     FuriMutex* mutex;
     FuriMessageQueue* input;
+    FuriEventFlag* control;
     bool connected;
     bool usb_failed;
     bool duration_selected;
@@ -69,10 +71,12 @@ static HamProfile load_profile(HamApp* app) {
     HamProfile profile = ham_defaults();
     Storage* storage = furi_record_open(RECORD_STORAGE);
     storage_common_mkdir(storage, HAM_DIR);
-    create_file(storage, HAM_PROFILE, default_profile);
+    ham_profile_recover(storage);
+    const char* profile_path = ham_profile_source(storage);
+    if(!strcmp(profile_path, HAM_PROFILE)) create_file(storage, HAM_PROFILE, default_profile);
     create_file(storage, HAM_TEXT, sample_text);
     char config[1024];
-    read_file(storage, HAM_PROFILE, config, sizeof(config));
+    read_file(storage, profile_path, config, sizeof(config));
     char* line = config;
     while(*line) {
         char* end = strchr(line, '\n');
@@ -113,7 +117,7 @@ static HamProfile load_profile(HamApp* app) {
     }
     return profile;
 }
-static void save_profile(const HamProfile* p) {
+static bool save_profile(const HamProfile* p) {
     char config[512];
     snprintf(config, sizeof(config),
              "# HAM profile. Radius is in relative HID counts.\n"
@@ -122,12 +126,9 @@ static void save_profile(const HamProfile* p) {
              p->activity, p->radius, p->duration_seconds, p->wpm_min, p->wpm_max,
              p->click_percent, (unsigned long)p->seed);
     Storage* storage = furi_record_open(RECORD_STORAGE);
-    File* file = storage_file_alloc(storage);
-    if(storage_file_open(file, HAM_PROFILE, FSAM_WRITE, FSOM_CREATE_ALWAYS))
-        storage_file_write(file, config, strlen(config));
-    storage_file_close(file);
-    storage_file_free(file);
+    bool saved = ham_profile_store(storage, config);
     furi_record_close(RECORD_STORAGE);
+    return saved;
 }
 static void release_inputs(void) {
     furi_hal_hid_kb_release_all();
@@ -146,10 +147,14 @@ static bool dispatch(HamEvent event) {
 }
 static void input_callback(InputEvent* event, void* context) {
     HamApp* app = context;
-    /* Repeats may be dropped, but a Back press must always reach the main loop. */
-    if(event->type == InputTypeShort || event->type == InputTypeRepeat ||
-       (event->key == InputKeyBack && event->type == InputTypePress))
-        furi_message_queue_put(app->input, event, FuriWaitForever);
+    /* Back bypasses the queue so a repeat flood cannot delay or drop an exit.
+       Never block the GUI callback waiting for the app to consume input. */
+    if(event->key == InputKeyBack) {
+        if(event->type == InputTypePress || event->type == InputTypeShort)
+            furi_event_flag_set(app->control, 1);
+    } else if(event->type == InputTypeShort || event->type == InputTypeRepeat) {
+        furi_message_queue_put(app->input, event, 0);
+    }
 }
 static void draw_callback(Canvas* canvas, void* context) {
     HamApp* app = context;
@@ -224,6 +229,7 @@ int32_t ham_app(void* context) {
 #endif
     app->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     app->input = furi_message_queue_alloc(16, sizeof(InputEvent));
+    app->control = furi_event_flag_alloc();
     HamProfile profile = load_profile(app);
     ham_init(&app->engine, profile, app->text, profile.seed ? profile.seed : furi_hal_random_get());
 #if HAM_ENABLE_PREVIEW
@@ -251,6 +257,7 @@ int32_t ham_app(void* context) {
     while(!exit) {
         InputEvent input;
         FuriStatus received = furi_message_queue_get(app->input, &input, 10);
+        exit = (furi_event_flag_get(app->control) & 1) != 0;
         uint32_t now = furi_get_tick();
         furi_mutex_acquire(app->mutex, FuriWaitForever);
         bool connected = is_preview || (!app->usb_failed && furi_hal_hid_is_connected());
@@ -261,10 +268,10 @@ int32_t ham_app(void* context) {
         app->connected = connected;
 #if HAM_ENABLE_PREVIEW
         if(is_preview) {
-            exit = now - opened > 800;
+            exit = exit || now - opened > 800;
         } else
 #endif
-        if(received == FuriStatusOk) {
+        if(!exit && received == FuriStatusOk) {
             if(input.key == InputKeyBack) exit = true;
             else if(input.key == InputKeyUp) app->duration_selected = false;
             else if(input.key == InputKeyDown) app->duration_selected = true;
@@ -312,7 +319,11 @@ int32_t ham_app(void* context) {
     view_port_free(view);
     furi_record_close(RECORD_GUI);
     if(!app->usb_failed && !is_preview) furi_hal_usb_set_config(previous_usb, NULL);
-    if(!is_preview) save_profile(&app->engine.profile);
+    if(!is_preview && !save_profile(&app->engine.profile)) {
+        DialogsApp* dialogs = furi_record_open(RECORD_DIALOGS);
+        dialog_message_show_storage_error(dialogs, "Could not save\nHAM settings.");
+        furi_record_close(RECORD_DIALOGS);
+    }
 #if HAM_ENABLE_PREVIEW
     if(app->capture && app->captured) {
         Storage* storage = furi_record_open(RECORD_STORAGE);
@@ -325,6 +336,7 @@ int32_t ham_app(void* context) {
     }
 #endif
     furi_message_queue_free(app->input);
+    furi_event_flag_free(app->control);
     furi_mutex_free(app->mutex);
     free(app);
     return 0;

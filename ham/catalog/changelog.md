@@ -2,6 +2,9 @@
 
 ## v0.6
 
+- Preserve previous settings when saving fails and recover interrupted profile updates.
+- Keep button callbacks nonblocking and handle Back independently of queued input.
+- Include the MIT license notice in the catalog source bundle.
 - Prepare the first catalog submission with an MIT license, app description, and screenshots.
 - Exclude screenshot capture modes from normal builds; keep an explicit developer build flag.
 

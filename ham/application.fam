@@ -4,7 +4,7 @@ App(
     apptype=FlipperAppType.EXTERNAL,
     entry_point="ham_app",
     stack_size=4096,
-    requires=["gui", "storage"],
+    requires=["gui", "storage", "dialogs"],
     fap_category="USB",
     fap_version="0.6",
     fap_icon="icons/ham.png",
